@@ -1,5 +1,5 @@
 from http.server import BaseHTTPRequestHandler
-import requests, json
+import requests, json, base64
 
 URL = "https://samagra.gov.in/Services/CommonWebApi.svc/GetDetailsBySamagra"
 
@@ -9,15 +9,18 @@ HEADERS = {
     "Authorization": "Basic c2FtYWdyYUFwaTpzYW1hZ3JhQDEyMw==",
 }
 
+# ================= FETCH =================
 def fetch(payload):
     try:
-        r = requests.post(URL, headers=HEADERS, json=payload, timeout=4)
+        r = requests.post(URL, headers=HEADERS, json=payload, timeout=5)
         if r.status_code != 200:
             return None
-        return r.json().get("d", {})
+        data = r.json()
+        return data.get("d") if "d" in data else data
     except:
         return None
 
+# ================= SMART SEARCH =================
 def smart_get(obj, keys):
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -33,61 +36,85 @@ def smart_get(obj, keys):
                 return res
     return None
 
+# ================= GET IDS =================
 def get_user_ids(mobile):
     res = fetch({"samagraID": "0", "MobileNo": mobile})
     if not res:
         return []
 
-    items = res if isinstance(res, list) else [res]
+    items = res if isinstance(res, list) else res.get("data", [])
+    if not items and isinstance(res, dict):
+        items = [res]
 
+    ids = []
     for it in items:
         uid = smart_get(it, ["UserID", "samagraID", "MemberID"])
         if uid:
-            return [str(uid)]
+            ids.append(str(uid))
 
-    return []
+    return list(dict.fromkeys(ids))
 
+# ================= FULL DATA =================
 def get_full(uid):
-    res = fetch({"samagraID": uid})
+    res = fetch({"samagraID": str(uid)})
     if not res:
         return None
 
-    photo = smart_get(res, ["Photo"])
+    photo = smart_get(res, ["Photo", "MemberPhoto", "ProfilePhoto"])
 
     return {
         "uid": uid,
-        "name": smart_get(res, ["MemberNameE"]),
+        "name": smart_get(res, ["MemberNameE", "Name", "FullName"]),
+        "name_hindi": smart_get(res, ["MemberNameH"]),
+        "dob": smart_get(res, ["Dob", "DOB"]),
+        "gender": smart_get(res, ["Gender"]),
+        "family_id": smart_get(res, ["FamilyID"]),
         "mobile": smart_get(res, ["MobileNo"]),
+        "address": smart_get(res, ["Address"]),
+        "district": smart_get(res, ["DistrictName"]),
+        "category": smart_get(res, ["CategoryName"]),
         "photo_url": f"data:image/jpeg;base64,{photo}" if photo else None
     }
 
+# ================= HANDLER =================
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         from urllib.parse import urlparse, parse_qs
 
         try:
-            q = parse_qs(urlparse(self.path).query)
-            mobile = q.get("mobile", [None])[0]
+            query = parse_qs(urlparse(self.path).query)
+            mobile = query.get("mobile", [None])[0]
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
 
             if not mobile:
-                self.wfile.write(json.dumps({"status": False}).encode())
+                self.wfile.write(json.dumps({
+                    "status": False,
+                    "message": "mobile required"
+                }).encode())
                 return
 
             uids = get_user_ids(mobile)
 
             if not uids:
-                self.wfile.write(json.dumps({"status": False}).encode())
+                self.wfile.write(json.dumps({
+                    "status": False,
+                    "message": "No records found"
+                }).encode())
                 return
 
-            data = get_full(uids[0])
+            results = []
+            for uid in uids[:2]:  # limit for speed
+                data = get_full(uid)
+                if data:
+                    results.append(data)
 
             self.wfile.write(json.dumps({
                 "status": True,
-                "data": data
+                "total": len(results),
+                "data": results
             }).encode())
 
         except Exception as e:
