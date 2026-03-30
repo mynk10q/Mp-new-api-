@@ -10,18 +10,27 @@ HEADERS = {
     "Authorization": "Basic c2FtYWdyYUFwaTpzYW1hZ3JhQDEyMw==",
 }
 
-# ================= FETCH =================
+# ================= SAFE FETCH =================
 def fetch(payload):
     try:
-        r = requests.post(URL, headers=HEADERS, json=payload, timeout=20, verify=False)
+        r = requests.post(
+            URL,
+            headers=HEADERS,
+            json=payload,
+            timeout=5  # ⚠️ IMPORTANT (fast rakha)
+        )
+
         if r.status_code != 200:
             return None
 
         text = r.content.decode("utf-8-sig", errors="ignore").strip()
         data = json.loads(text)
+
         return data.get("d") if "d" in data else data
-    except:
+
+    except Exception as e:
         return None
+
 
 # ================= SMART SEARCH =================
 def smart_get(obj, keys):
@@ -39,7 +48,8 @@ def smart_get(obj, keys):
                 return res
     return None
 
-# ================= GET USER IDS =================
+
+# ================= GET IDS =================
 def get_user_ids(mobile):
     res = fetch({"samagraID": "0", "MobileNo": mobile})
 
@@ -58,11 +68,14 @@ def get_user_ids(mobile):
 
     return list(dict.fromkeys(ids))
 
+
 # ================= FULL DATA =================
 def get_full(uid):
     res = fetch({"samagraID": str(uid)})
     if not res:
         return None
+
+    photo_data = smart_get(res, ["Photo"])
 
     return {
         "uid": uid,
@@ -75,45 +88,54 @@ def get_full(uid):
         "address": smart_get(res, ["Address"]),
         "district": smart_get(res, ["DistrictName"]),
         "category": smart_get(res, ["CategoryName"]),
-        "photo": smart_get(res, ["Photo"])
+        "photo": photo_data,
+        "photo_url": f"data:image/jpeg;base64,{photo_data}" if photo_data else None
     }
+
 
 # ================= HANDLER =================
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         from urllib.parse import urlparse, parse_qs
 
-        query = parse_qs(urlparse(self.path).query)
-        mobile = query.get("mobile", [None])[0]
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            mobile = query.get("mobile", [None])[0]
 
-        self.send_response(200)
-        self.send_header("Content-type", "application/json")
-        self.end_headers()
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
 
-        if not mobile:
+            if not mobile:
+                self.wfile.write(json.dumps({
+                    "status": False,
+                    "message": "mobile required"
+                }).encode())
+                return
+
+            uids = get_user_ids(mobile)
+
+            if not uids:
+                self.wfile.write(json.dumps({
+                    "status": False,
+                    "message": "No records found"
+                }).encode())
+                return
+
+            results = []
+            for uid in uids[:3]:  # ⚠️ LIMIT (fast response)
+                data = get_full(uid)
+                if data:
+                    results.append(data)
+
+            self.wfile.write(json.dumps({
+                "status": True,
+                "total": len(results),
+                "data": results
+            }).encode())
+
+        except Exception as e:
             self.wfile.write(json.dumps({
                 "status": False,
-                "message": "mobile required"
+                "error": str(e)
             }).encode())
-            return
-
-        uids = get_user_ids(mobile)
-
-        if not uids:
-            self.wfile.write(json.dumps({
-                "status": False,
-                "message": "No records found"
-            }).encode())
-            return
-
-        results = []
-        for uid in uids:
-            data = get_full(uid)
-            if data:
-                results.append(data)
-
-        self.wfile.write(json.dumps({
-            "status": True,
-            "total": len(results),
-            "data": results
-        }).encode())
